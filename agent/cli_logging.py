@@ -57,7 +57,7 @@ async def interactive_loop(executor_cls: Type) -> None:
         query = query.strip()
         if not query:
             continue
-        if query.lower() in ("exit", "quit"):
+        if query.lower() in ("exit", "quit", "q", "e"):
             print("Exiting interactive loop.")
             break
         try:

@@ -7,7 +7,7 @@ Available skills:
   summariser         condense long content
   critic             pass/fail evaluation of an upstream node
   formatter          render the final user-facing answer (TERMINAL)
-  coder              emit Python (stub; routes to sandbox_executor)
+  coder              generates executable Python for numerical computation; sandbox_executor runs it automatically
   sandbox_executor   run Python from coder
   (browser           reserved for Session 9)
 
@@ -40,6 +40,14 @@ the orchestrator can run them in parallel. Do NOT consolidate.
 Each per-item worker must carry its item in `metadata.question`
 and must NOT list USER_QUERY in its inputs.
 
+When the task requires numerical computation on values gathered by
+data-collection nodes (comparing sizes, differences, ranking, statistics),
+route the computation through a `coder` node, not the formatter. The coder
+receives all upstream data nodes as inputs, embeds their values as Python
+literals, and computes the result. Include both the data-collection outputs
+AND the coder node in the formatter's inputs so it can present the sources
+alongside the computed result.
+
 When the user demands a strict format constraint the writer might
 miss ("exactly 5-7-5 syllables", "valid JSON", "≤ 280 characters"),
 insert a `critic` node between the writing node and the formatter.
@@ -66,17 +74,21 @@ there is nothing to fan out over):
    {"skill":"formatter","inputs":["USER_QUERY","n:r1"],
     "metadata":{"label":"out"}}]}
 
-Example — fan-out over N items ("populations of London, Paris,
-Berlin; which two are closest?"). Each researcher is scoped by
-metadata.question and does NOT receive USER_QUERY; the formatter
-does, so it can answer the comparison the user asked for:
-{"rationale": "Fetch each city's population in parallel, then compare.",
+Example — fan-out over N items with numerical comparison (e.g.
+"values of A, B, C; which two are closest?"). Researchers run in
+parallel, each scoped by metadata.question (no USER_QUERY). A coder
+node does the comparison computation. The formatter receives USER_QUERY,
+all researcher outputs, and the coder output so it can cite sources
+and present the computed answer:
+{"rationale": "Fetch each value in parallel, compute the comparison in code, then format.",
  "nodes": [
    {"skill":"researcher","inputs":[],
-    "metadata":{"label":"rL","question":"current population of London"}},
+    "metadata":{"label":"r1","question":"<specific question for item 1>"}},
    {"skill":"researcher","inputs":[],
-    "metadata":{"label":"rP","question":"current population of Paris"}},
+    "metadata":{"label":"r2","question":"<specific question for item 2>"}},
    {"skill":"researcher","inputs":[],
-    "metadata":{"label":"rB","question":"current population of Berlin"}},
-   {"skill":"formatter","inputs":["USER_QUERY","n:rL","n:rP","n:rB"],
+    "metadata":{"label":"r3","question":"<specific question for item 3>"}},
+   {"skill":"coder","inputs":["n:r1","n:r2","n:r3"],
+    "metadata":{"label":"comp","question":"<what to compute from the gathered values>"}},
+   {"skill":"formatter","inputs":["USER_QUERY","n:r1","n:r2","n:r3","n:comp"],
     "metadata":{"label":"out"}}]}

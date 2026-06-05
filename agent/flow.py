@@ -176,135 +176,141 @@ class Executor:
                   resume: bool = False) -> str:
         sid = session_id or f"s8-{uuid.uuid4().hex[:8]}"
         store = SessionStore(sid)
-        if resume:
-            existing = store.read_graph()
-            if existing is None:
-                raise RuntimeError(f"cannot resume {sid}: no graph.pkl on disk")
-            graph_obj = existing
-            graph = Graph.__new__(Graph)
-            graph.g = graph_obj
-            graph._counter = max(
-                [int(n.split(":")[1]) for n in graph.g.nodes if n.startswith("n:")] or [0]
-            )
-            for _, d in graph.g.nodes(data=True):
-                if d["status"] == "running":
-                    d["status"] = "pending"
-            if not query:
-                query = store.read_query()
-        else:
-            store.write_query(query)
-            graph = Graph()
-            graph.add_node("planner", inputs=["USER_QUERY"])
 
-        print(f"\n{'═' * 78}\nsession {sid}  ─  query: {query}\n{'═' * 78}")
-        # Read memory ONCE at session start; the same hits flow into every
-        # skill's prompt. The S7 contract is that every cognitive role sees
-        # memory; carrying that forward verbatim here is what makes S7's
-        # indexing investment continue to pay off in S8.
-        memory_hits = memory_svc.read(query) or []
-        if memory_hits:
-            print(f"[memory.read] {len(memory_hits)} hit(s) visible to every skill this run")
-        try:
-            memory_svc.remember(query, source="user_query", run_id=sid)
-        except Exception as e:
-            print(f"[memory.remember] skipped: {e!r}")
+        from cli_logging import tee_output
+        log_path = store.dir / "terminal.log"
+        mode = "a" if resume else "w"
 
-        formatter_answer: str | None = None
-        executed_count = 0
-        # Per-target cap for critic-fail recovery; see P1 #5 fix below.
-        recovered_branches: dict[str, bool] = {}
-        # NOTES_RUNS round-3 review #5: when the cap fires, the branch is
-        # skipped silently and the final answer reflects missing data with
-        # no flag. Track every second-or-later critic-fail here so the
-        # final log can surface it.
-        critic_fail_cap_hit: list[str] = []
+        with tee_output(log_path, mode):
+            if resume:
+                existing = store.read_graph()
+                if existing is None:
+                    raise RuntimeError(f"cannot resume {sid}: no graph.pkl on disk")
+                graph_obj = existing
+                graph = Graph.__new__(Graph)
+                graph.g = graph_obj
+                graph._counter = max(
+                    [int(n.split(":")[1]) for n in graph.g.nodes if n.startswith("n:")] or [0]
+                )
+                for _, d in graph.g.nodes(data=True):
+                    if d["status"] == "running":
+                        d["status"] = "pending"
+                if not query:
+                    query = store.read_query()
+            else:
+                store.write_query(query)
+                graph = Graph()
+                graph.add_node("planner", inputs=["USER_QUERY"])
 
-        while True:
-            ready = graph.ready_nodes()
-            if not ready and not graph.has_running():
-                break
-            if executed_count + len(ready) > MAX_NODES:
-                print(f"[flow] node cap {MAX_NODES} hit at {executed_count}; stopping")
-                break
+            print(f"\n{'═' * 78}\nsession {sid}  ─  query: {query}\n{'═' * 78}")
+            # Read memory ONCE at session start; the same hits flow into every
+            # skill's prompt. The S7 contract is that every cognitive role sees
+            # memory; carrying that forward verbatim here is what makes S7's
+            # indexing investment continue to pay off in S8.
+            memory_hits = memory_svc.read(query) or []
+            if memory_hits:
+                print(f"[memory.read] {len(memory_hits)} hit(s) visible to every skill this run")
+            try:
+                memory_svc.remember(query, source="user_query", run_id=sid)
+            except Exception as e:
+                print(f"[memory.remember] skipped: {e!r}")
 
-            for nid in ready:
-                graph.mark(nid, "running")
-            store.write_graph(graph.g)
+            formatter_answer: str | None = None
+            executed_count = 0
+            # Per-target cap for critic-fail recovery; see P1 #5 fix below.
+            recovered_branches: dict[str, bool] = {}
+            # NOTES_RUNS round-3 review #5: when the cap fires, the branch is
+            # skipped silently and the final answer reflects missing data with
+            # no flag. Track every second-or-later critic-fail here so the
+            # final log can surface it.
+            critic_fail_cap_hit: list[str] = []
 
-            outcomes = await asyncio.gather(*[self._run_one(nid, graph, sid, query, store, memory_hits)
-                                              for nid in ready])
-
-            for nid, result, prompt in outcomes:
-                executed_count += 1
-                graph.g.nodes[nid]["result"] = result
-                graph.mark(nid, "complete" if result.success else "failed")
-                store.write_node(NodeState(
-                    node_id=nid, skill=graph.g.nodes[nid]["skill"],
-                    status=graph.g.nodes[nid]["status"],
-                    inputs=graph.g.nodes[nid]["inputs"],
-                    result=result, prompt_sent=prompt,
-                    started_at=time.time() - result.elapsed_s,
-                    completed_at=time.time(),
-                ))
-                print(f"[{nid}] {graph.g.nodes[nid]['skill']:18s} "
-                      f"{graph.g.nodes[nid]['status']:8s} "
-                      f"({result.elapsed_s:.1f}s)"
-                      + (f"  err={result.error[:80]}" if result.error else ""))
-
-                if result.success:
-                    if graph.g.nodes[nid]["skill"] == "critic":
-                        if handle_critic_verdict(nid, result, graph,
-                                                 recovered_branches,
-                                                 critic_fail_cap_hit):
-                            continue
-                        # verdict == pass: the child is now ready to run.
-                    graph.extend_from(nid, result, registry=self.registry)
-                    if graph.g.nodes[nid]["skill"] == "formatter":
-                        fa = result.output.get("final_answer")
-                        if isinstance(fa, str) and fa.strip():
-                            formatter_answer = fa
-                else:
-                    failed_skill = graph.g.nodes[nid]["skill"]
-                    decision = plan_recovery(
-                        failed_skill=failed_skill,
-                        error_text=result.error or "",
-                        failed_node_id=nid,
-                    )
-                    if decision.action == "skip":
-                        print(f"  ↪ {nid} failed ({decision.reason}, "
-                              f"skill={failed_skill}): {decision.note}")
-                        continue
-                    # action == "replan"
-                    rec_nid = graph.add_node(
-                        "planner", inputs=["USER_QUERY"],
-                        metadata={"failure_report": decision.failure_report,
-                                  "recovers": nid,
-                                  "recovery_reason": decision.reason},
-                    )
-                    print(f"  ↪ recovery ({decision.reason}): planner node "
-                          f"{rec_nid} queued for {nid}")
-
-            store.write_graph(graph.g)
-
-        if formatter_answer is None:
-            for nid in reversed(list(graph.g.nodes)):
-                d = graph.g.nodes[nid]
-                if d["status"] == "complete" and isinstance(d.get("result"), AgentResult):
-                    formatter_answer = json.dumps(d["result"].output)[:2000]
+            while True:
+                ready = graph.ready_nodes()
+                if not ready and not graph.has_running():
+                    break
+                if executed_count + len(ready) > MAX_NODES:
+                    print(f"[flow] node cap {MAX_NODES} hit at {executed_count}; stopping")
                     break
 
-        if critic_fail_cap_hit:
-            # Loud surface — see review round-3 #5. Without this the cap
-            # firing was invisible and the user would just see a thin
-            # formatter answer with no explanation of why.
-            print(f"\n[flow] WARNING: critic-fail cap hit on "
-                  f"{len(critic_fail_cap_hit)} branch(es): "
-                  f"{', '.join(critic_fail_cap_hit)}. "
-                  f"The final answer reflects missing data from these "
-                  f"branches because the Critic rejected the re-planned "
-                  f"output too.")
-        print(f"\n{'═' * 78}\nFINAL: {(formatter_answer or '')[:600]}\n{'═' * 78}\n")
-        return formatter_answer or ""
+                for nid in ready:
+                    graph.mark(nid, "running")
+                store.write_graph(graph.g)
+
+                outcomes = await asyncio.gather(*[self._run_one(nid, graph, sid, query, store, memory_hits)
+                                                  for nid in ready])
+
+                for nid, result, prompt in outcomes:
+                    executed_count += 1
+                    graph.g.nodes[nid]["result"] = result
+                    graph.mark(nid, "complete" if result.success else "failed")
+                    store.write_node(NodeState(
+                        node_id=nid, skill=graph.g.nodes[nid]["skill"],
+                        status=graph.g.nodes[nid]["status"],
+                        inputs=graph.g.nodes[nid]["inputs"],
+                        result=result, prompt_sent=prompt,
+                        started_at=time.time() - result.elapsed_s,
+                        completed_at=time.time(),
+                    ))
+                    print(f"[{nid}] {graph.g.nodes[nid]['skill']:18s} "
+                          f"{graph.g.nodes[nid]['status']:8s} "
+                          f"({result.elapsed_s:.1f}s)"
+                          + (f"  err={result.error[:80]}" if result.error else ""))
+
+                    if result.success:
+                        if graph.g.nodes[nid]["skill"] == "critic":
+                            if handle_critic_verdict(nid, result, graph,
+                                                     recovered_branches,
+                                                     critic_fail_cap_hit):
+                                continue
+                            # verdict == pass: the child is now ready to run.
+                        graph.extend_from(nid, result, registry=self.registry)
+                        if graph.g.nodes[nid]["skill"] == "formatter":
+                            fa = result.output.get("final_answer")
+                            if isinstance(fa, str) and fa.strip():
+                                formatter_answer = fa
+                    else:
+                        failed_skill = graph.g.nodes[nid]["skill"]
+                        decision = plan_recovery(
+                            failed_skill=failed_skill,
+                            error_text=result.error or "",
+                            failed_node_id=nid,
+                        )
+                        if decision.action == "skip":
+                            print(f"  ↪ {nid} failed ({decision.reason}, "
+                                  f"skill={failed_skill}): {decision.note}")
+                            continue
+                        # action == "replan"
+                        rec_nid = graph.add_node(
+                            "planner", inputs=["USER_QUERY"],
+                            metadata={"failure_report": decision.failure_report,
+                                      "recovers": nid,
+                                      "recovery_reason": decision.reason},
+                        )
+                        print(f"  ↪ recovery ({decision.reason}): planner node "
+                              f"{rec_nid} queued for {nid}")
+
+                store.write_graph(graph.g)
+
+            if formatter_answer is None:
+                for nid in reversed(list(graph.g.nodes)):
+                    d = graph.g.nodes[nid]
+                    if d["status"] == "complete" and isinstance(d.get("result"), AgentResult):
+                        formatter_answer = json.dumps(d["result"].output)[:2000]
+                        break
+
+            if critic_fail_cap_hit:
+                # Loud surface — see review round-3 #5. Without this the cap
+                # firing was invisible and the user would just see a thin
+                # formatter answer with no explanation of why.
+                print(f"\n[flow] WARNING: critic-fail cap hit on "
+                      f"{len(critic_fail_cap_hit)} branch(es): "
+                      f"{', '.join(critic_fail_cap_hit)}. "
+                      f"The final answer reflects missing data from these "
+                      f"branches because the Critic rejected the re-planned "
+                      f"output too.")
+            print(f"\n{'═' * 78}\nFINAL: {(formatter_answer or '')[:600]}\n{'═' * 78}\n")
+            return formatter_answer or ""
 
     async def _run_one(self, nid: str, graph: Graph, sid: str, query: str,
                        store: SessionStore, memory_hits: list) -> tuple[str, AgentResult, str]:
@@ -327,14 +333,8 @@ class Executor:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    args = sys.argv[1:]
-    resume_sid: str | None = None
-    if args and args[0] == "--resume":
-        resume_sid = args[1] if len(args) > 1 else None
-        query = " ".join(args[2:])
-    else:
-        query = " ".join(args) or "Say hello in one short sentence."
-    asyncio.run(Executor().run(query, session_id=resume_sid, resume=bool(resume_sid)))
+    from cli_logging import run_cli
+    run_cli(Executor)
 
 
 if __name__ == "__main__":

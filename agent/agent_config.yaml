@@ -59,6 +59,13 @@ summariser:
   max_tokens: 1200
   description: Condenses long content into a short form.
 
+linkedin_writer:
+  prompt: prompts/linkedin_writer.md
+  critic: true
+  temperature: 0.7
+  max_tokens: 1200
+  description: Generates LinkedIn posts in an ML/AI engineer voice to showcase technical credibility and grow an engaged following.
+
 critic:
   prompt: prompts/critic.md
   temperature: 0.0         # pass/fail; we want determinism

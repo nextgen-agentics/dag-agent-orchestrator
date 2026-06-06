@@ -9,6 +9,7 @@ Available skills:
   formatter          render the final user-facing answer (TERMINAL)
   coder              generates executable Python for numerical computation; sandbox_executor runs it automatically
   sandbox_executor   run Python from coder
+  linkedin_writer    write a LinkedIn post in an ML/AI engineer voice from upstream research data
   (browser           reserved for Session 9)
 
 Output (JSON, no markdown):
@@ -47,6 +48,13 @@ receives all upstream data nodes as inputs, embeds their values as Python
 literals, and computes the result. Include both the data-collection outputs
 AND the coder node in the formatter's inputs so it can present the sources
 alongside the computed result.
+
+When the task asks for a LinkedIn post, social post, or "write a post about X",
+route through a `linkedin_writer` node after any data-collection nodes. Supply
+the topic brief in `metadata.question` (format type, focus, tone, target
+audience). Because `linkedin_writer` has `critic: true`, the orchestrator
+auto-inserts a Critic node to verify the post is grounded in upstream data
+before the formatter presents it.
 
 When the user demands a strict format constraint the writer might
 miss ("exactly 5-7-5 syllables", "valid JSON", "≤ 280 characters"),

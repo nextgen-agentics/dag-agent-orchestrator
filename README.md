@@ -36,6 +36,8 @@ FINAL: Hello! How can I help you today?
 ```
 </details>
 
+---
+
 ### Question 1.2: Claude Shannon Search
 * **Query:** `Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory.`
 <details>
@@ -70,6 +72,8 @@ FINAL: Claude Shannon was born on April 30, 1916, and passed away on February 24
 
 ```
 </details>
+
+---
 
 ### Question 1.3: Parallel Population Comparison
 * **Query:** `Find the populations of London, Paris, Berlin and tell me which two are closest in size.`
@@ -161,7 +165,9 @@ Parallel speedup ratio:        2.24x
 ```
 </details>
 
-![](./ageent/tests/graph.png)
+![](./agent/tests/graph.png)
+
+---
 
 ### Question 1.4: Fallback for Invalid Paths
 * **Query:** `Read /nonexistent/path.txt and tell me what's in it.`
@@ -185,6 +191,8 @@ FINAL: I am unable to read the file at /nonexistent/path.txt because the specifi
 
 ```
 </details>
+
+---
 
 ### Question 1.5: SIGKILL Resume Verification
 * **Query:** For Lagos, Cairo, and Kinshasa, find current populations and growth rates and tell me which is growing fastest.

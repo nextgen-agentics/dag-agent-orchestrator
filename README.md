@@ -6,8 +6,7 @@ A multi-agent, growing-graph (DAG) orchestrator built on NetworkX and asyncio. F
 
 ## 📺 Demo Video
 
-[![▶️ Watch the End-to-End Demo on YouTube](https://img.youtube.com/vi/I2n8HoV_tpk/0.jpg)](https://www.youtube.com/watch?v=I2n8HoV_tpk)
-
+[![▶️ Watch the End-to-End Demo on YouTube](https://img.youtube.com/vi/MdkgCIjdpuo/0.jpg)](https://www.youtube.com/watch?v=MdkgCIjdpuo)
 
 
 ---
